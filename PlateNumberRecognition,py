@@ -1,0 +1,132 @@
+import torch
+import cv2
+import easyocr
+import numpy as np
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+
+class PlateRecogniser:
+    def __init__(self, model_path, image_path, output_dir="upscaled", device_type="cpu"):
+        # Initialize the Recogniser with paths and settings
+
+        self.model_path = Path(model_path)            # Path to the YOLOv5 model (.pt file)
+        self.image_path = Path(image_path)            # Path to the input image
+        self.base_name = self.image_path.stem         # Base name of image file (without extension)
+        self.output_dir = Path(output_dir)            # Directory to save upscaled and cropped images
+        self.output_dir.mkdir(exist_ok=True)          # Create output directory if it doesn't exist
+        self.device = torch.device(device_type)       # Specify device: 'cpu' or 'cuda'
+        self.model = self.load_model()                # Load YOLOv5 detection model
+        self.reader = easyocr.Reader(['en'])          # Initialize EasyOCR reader for English text
+
+    def load_model(self):
+        # Load a custom-trained YOLOv5 model using torch.hub
+        print(" Loading YOLOv5 model...")
+        model = torch.hub.load('ultralytics/yolov5', 'custom', path=self.model_path)
+        return model.to(self.device)  # Move model to CPU or GPU as specified
+
+    def detect_and_crop_plate(self):
+        # Detect license plate from the input image and crop it
+
+        image = cv2.imread(str(self.image_path))       # Read input image using OpenCV
+        if image is None:
+            raise FileNotFoundError(f"Image not found: {self.image_path}")
+
+        image_crop = image.copy()                      # Copy for cropping
+        image_draw = image.copy()                      # Copy for drawing bounding boxes
+
+        print(" Running detection...")
+        results = self.model(image)                    # Run YOLOv5 inference on image
+        detections = results.pandas().xyxy[0]          # Get detection results as pandas DataFrame
+
+        cropped_path = None                            # Placeholder for path to cropped image
+
+        for idx, row in detections.iterrows():
+            # Extract bounding box coordinates with slight padding
+            h, w, _ = image.shape
+            x1 = max(0, int(row['xmin']) - 5)
+            y1 = max(0, int(row['ymin']) - 5)
+            x2 = min(w, int(row['xmax']) + 5)
+            y2 = min(h, int(row['ymax']) + 5)
+
+            label = row['name']                        # Class label (e.g., "plate")
+
+            # Crop the detected region and upscale it by 2x
+            cropped = image_crop[y1:y2, x1:x2]
+            upscaled = cv2.resize(cropped, None, fx=2, fy=2, interpolation=cv2.INTER_LANCZOS4)
+
+            # Save the cropped and upscaled plate image
+            cropped_path = self.output_dir / f"{self.base_name}.jpg"
+            cv2.imwrite(str(cropped_path), upscaled)
+            print(f" Saved upscaled plate to {cropped_path}")
+
+            # Draw bounding box and label on the original image for visualization
+            cv2.rectangle(image_draw, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.putText(image_draw, f"{label}", (x1, y1 - 5),
+                        cv2.FONT_HERSHEY_PLAIN, 1.25, (0, 0, 255), 2)
+
+        return cropped_path  # Return path to the saved cropped plate image
+
+    def extract_text(self, cropped_image_path):
+        # Use OCR to extract and annotate text from a cropped license plate image
+
+        image = cv2.imread(str(cropped_image_path))     # Read the cropped image
+        if image is None:
+            raise FileNotFoundError(f"Image not found: {cropped_image_path}")
+
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB for OCR
+
+        print(" Running OCR...")
+        results = self.reader.readtext(image_rgb)       # Run EasyOCR on the RGB image
+
+        text_with_coords = []                           # Store detected text with horizontal coords
+
+        for (bbox, text, prob) in results:
+            # Unpack bounding box and convert coordinates to integers
+            (top_left, _, bottom_right, _) = bbox
+            top_left = tuple(map(int, top_left))
+            bottom_right = tuple(map(int, bottom_right))
+
+            # Save text and left x-coordinate for sorting
+            text_with_coords.append((top_left[0], text))
+
+            # Draw bounding box around text
+            cv2.rectangle(image, top_left, bottom_right, (0, 255, 0), 2)
+
+            # Draw the text label above the box
+            cv2.putText(image, text, (top_left[0], top_left[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        # Sort text left to right based on x-coordinate
+        text_with_coords.sort(key=lambda x: x[0])
+        full_plate = ''.join([text for _, text in text_with_coords])  # Reconstruct full plate text
+
+        # Save the annotated image with OCR results
+        output_path = f"output/{self.base_name}.jpg"
+        cv2.imwrite(output_path, image)
+        print(f" OCR-annotated image saved to: {output_path}")
+
+        # Print individual detected segments
+        print("\nDetected Text Segments:")
+        for _, text in text_with_coords:
+            print(text)
+
+        print(f"\n Reconstructed Plate: {full_plate}")
+        return full_plate  # Return the combined license plate text
+
+
+
+def main():
+    recogniser = PlateRecogniser(
+        model_path="best.pt",
+        image_path="images/ef06v.jpg"
+    )
+
+    cropped_path = recogniser.detect_and_crop_plate()
+    if cropped_path:
+        recogniser.extract_text(cropped_path)
+
+
+if __name__ == "__main__":
+    main()
+
