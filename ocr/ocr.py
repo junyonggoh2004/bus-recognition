@@ -1,0 +1,2 @@
+import easyocr
+import paddleocr

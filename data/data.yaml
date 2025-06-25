@@ -1,0 +1,9 @@
+path: /content/drive/MyDrive/Shine 2025/dataset
+train: images/train
+val: images/val
+test: images/test
+names:
+  0: bus_front
+  1: bus_number
+  2: destination
+  3: eds
